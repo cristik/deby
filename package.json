@@ -1,0 +1,100 @@
+{
+	"name": "deby",
+	"displayName": "Deby - ruby debugger based on pry-remote",
+	"version": "0.0.1",
+	"publisher": "cristik",
+	"description": "Starter extension for developing debug adapters for VS Code.",
+	"author": {
+		"name": "Cristian Kocza",
+		"email": "cristik@cristik.com"
+	},
+	"license": "MIT",
+	"keywords": [
+		"multi-root ready"
+	],
+	"engines": {
+		"vscode": "^1.44.0"
+	},
+	"icon": "images/mock-debug-icon.png",
+	"categories": [
+		"Debuggers"
+	],
+	"private": true,
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/cristik/deby.git"
+	},
+	"bugs": {
+		"url": "https://github.com/cristik/deby/issues"
+	},
+	"scripts": {
+		"prepublish": "tsc -p ./src",
+		"compile": "tsc -p ./src",
+		"tslint": "tslint ./src/**/*.ts",
+		"watch": "tsc -w -p ./src",
+		"test": "mocha -u tdd ./out/tests/",
+		"package": "vsce package",
+		"publish": "vsce publish"
+	},
+	"dependencies": {
+		"await-notify": "1.0.1",
+		"vscode-debugadapter": "1.40.0"
+	},
+	"devDependencies": {
+		"@types/node": "10.12.12",
+		"@types/mocha": "5.2.7",
+		"@types/vscode": "^1.44.0",
+		"typescript": "3.5.3",
+		"mocha": "6.2.0",
+		"vscode-debugadapter-testsupport": "1.40.3",
+		"tslint": "5.18.0",
+		"vsce": "1.74.0"
+	},
+	"main": "./out/extension",
+	"activationEvents": [
+		"onDebug",
+		"onDebugDynamicConfigurations:deby",
+		"onCommand:extension.deby-debug.getProgramName"
+	],
+	"contributes": {
+		"breakpoints": [
+			{
+				"language": "ruby"
+			}
+		],
+		"debuggers": [
+			{
+				"type": "deby",
+				"label": "Deby",
+				"program": "./out/debugAdapter.js",
+				"runtime": "node",
+				"configurationAttributes": {
+					"launch": {
+						"required": [
+						],
+						"properties": {
+						}
+					}
+				},
+				"initialConfigurations": [
+					{
+						"type": "deby",
+						"request": "launch"
+					}
+				],
+				"configurationSnippets": [
+					{
+						"label": "Deby: Launch",
+						"description": "A new configuration for deby.",
+						"body": {
+							"type": "deby",
+							"request": "launch"
+						}
+					}
+				],
+				"variables": {
+				}
+			}
+		]
+	}
+}
