@@ -15,7 +15,7 @@ export class DebyBreakpoint {
 /**
  * The Deby runtime.
  */
-export class DebyRuntime extends EventEmitter {
+export class PryRemoteHandler extends EventEmitter {
 
 	private _pryRemoteProcess;
 	private _queue: any[] = [];

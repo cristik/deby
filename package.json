@@ -1,7 +1,7 @@
 {
 	"name": "deby",
 	"displayName": "Deby - ruby debugger based on pry-remote",
-	"version": "0.0.1",
+	"version": "0.0.2",
 	"publisher": "cristik",
 	"description": "Starter extension for developing debug adapters for VS Code.",
 	"author": {

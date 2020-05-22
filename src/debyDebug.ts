@@ -6,7 +6,7 @@ import {
 } from 'vscode-debugadapter';
 import { DebugProtocol } from 'vscode-debugprotocol';
 import { basename } from 'path';
-import { DebyRuntime, RuntimeState, DebyBreakpoint } from './debyRuntime';
+import { PryRemoteHandler, RuntimeState, DebyBreakpoint } from './pryRemoteHandler';
 const { Subject } = require('await-notify');
 
 /**
@@ -30,7 +30,7 @@ export class DebyDebugSession extends LoggingDebugSession {
 	private static THREAD_ID = 1;
 
 	// a Mock runtime (or debugger)
-	private _runtime: DebyRuntime;
+	private _runtime: PryRemoteHandler;
 
 	private _variableHandles = new Handles<string>();
 
@@ -53,7 +53,7 @@ export class DebyDebugSession extends LoggingDebugSession {
 		this.setDebuggerLinesStartAt1(true);
 		this.setDebuggerColumnsStartAt1(true);
 
-		this._runtime = new DebyRuntime();
+		this._runtime = new PryRemoteHandler();
 
 		// setup event handlers
 		this._runtime.on('stopOnEntry', () => {
@@ -237,13 +237,14 @@ export class DebyDebugSession extends LoggingDebugSession {
 	}
 
 	protected setBreakPointsRequest(response: DebugProtocol.SetBreakpointsResponse, args: DebugProtocol.SetBreakpointsArguments): void {
-		response.body.breakpoints = [];
-		(args.lines || []).forEach(line => {
-			let breakpoint: DebyBreakpoint = { id: this._runtime.breakpoints.length + 1, file: args.source.path || '', line: line };
-			this._runtime.breakpoints.push(breakpoint);
-			this.registerBreakpoint(breakpoint);
-			(response.body.breakpoints || []).push({id: breakpoint.id, verified: true, source: new Source(basename(breakpoint.file), breakpoint.file, breakpoint.line) });
-		});
+		// pry-debugger doesn't cope very well with breakpoints, disabling support for now
+		response.body = { breakpoints: [] };
+		// (args.lines || []).forEach(line => {
+		// 	let breakpoint: DebyBreakpoint = { id: this._runtime.breakpoints.length + 1, file: args.source.path || '', line: line };
+		// 	this._runtime.breakpoints.push(breakpoint);
+		// 	this.registerBreakpoint(breakpoint);
+		// 	(response.body.breakpoints || []).push({id: breakpoint.id, verified: true, source: new Source(basename(breakpoint.file), breakpoint.file, breakpoint.line) });
+		// });
 		this.sendResponse(response);
 	}
 
