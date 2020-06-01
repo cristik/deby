@@ -6,8 +6,16 @@ import {
 } from 'vscode-debugadapter';
 import { DebugProtocol } from 'vscode-debugprotocol';
 import { basename } from 'path';
-import { PryRemoteHandler, RuntimeState, DebyBreakpoint } from './pryRemoteHandler';
+import { InteractiveProcessHandler } from './interactiveProcessHandler';
+import { PortMonitor } from './portMonitor';
 const { Subject } = require('await-notify');
+
+
+class DebyBreakpoint {
+	public id: number
+	public file: string
+	public line: number
+}
 
 /**
  * This interface describes the deby-debug specific launch attributes
@@ -29,8 +37,11 @@ export class DebyDebugSession extends LoggingDebugSession {
 	// we don't support multiple threads, so we can use a hardcoded ID for the default thread
 	private static THREAD_ID = 1;
 
-	// a Mock runtime (or debugger)
-	private _runtime: PryRemoteHandler;
+	private processHandler: InteractiveProcessHandler;
+
+	private portMonitor: PortMonitor
+
+	private active: Boolean
 
 	private _variableHandles = new Handles<string>();
 
@@ -38,43 +49,53 @@ export class DebyDebugSession extends LoggingDebugSession {
 
 	private _cancelationTokens = new Map<number, boolean>();
 
-	private _connectionTimer;
-
-	private _paused = false;
-
 	/**
 	 * Creates a new debug adapter that is used for one debug session.
 	 * We configure the default implementation of a debug adapter here.
 	 */
 	public constructor() {
-		super("deby-debug.txt");
+		super("deby-debug.txt")
 
 		// this debugger uses zero-based lines and columns
-		this.setDebuggerLinesStartAt1(true);
-		this.setDebuggerColumnsStartAt1(true);
+		this.setDebuggerLinesStartAt1(true)
+		this.setDebuggerColumnsStartAt1(true)
 
-		this._runtime = new PryRemoteHandler();
+		this.processHandler = new InteractiveProcessHandler('rvm', ['2.1.10', 'exec', 'pry-remote'], /^\[\d+\]/);
+
+		this.processHandler.onTerminate = () => {
+			if (this.active) {
+				this.portMonitor.start()
+			}
+		}
+
+		this.processHandler.onUnexpectedOutput = () => {
+			//this.processHandler.breakpoints.forEach(breakpoint => this.registerBreakpoint(breakpoint));
+			this.sendEvent(new OutputEvent('Found a Pry session\n'));
+			this.sendEvent(new StoppedEvent('entry', DebyDebugSession.THREAD_ID));
+		}
+
+		this.portMonitor = new PortMonitor(9876, () => this.processHandler.launch())
 
 		// setup event handlers
-		this._runtime.on('stopOnEntry', () => {
+		this.processHandler.on('stopOnEntry', () => {
 			this.sendEvent(new StoppedEvent('entry', DebyDebugSession.THREAD_ID));
 		});
-		this._runtime.on('stopOnStep', () => {
+		this.processHandler.on('stopOnStep', () => {
 			this.sendEvent(new StoppedEvent('step', DebyDebugSession.THREAD_ID));
 		});
-		this._runtime.on('stopOnBreakpoint', () => {
+		this.processHandler.on('stopOnBreakpoint', () => {
 			this.sendEvent(new StoppedEvent('breakpoint', DebyDebugSession.THREAD_ID));
 		});
-		this._runtime.on('stopOnDataBreakpoint', () => {
+		this.processHandler.on('stopOnDataBreakpoint', () => {
 			this.sendEvent(new StoppedEvent('data breakpoint', DebyDebugSession.THREAD_ID));
 		});
-		this._runtime.on('stopOnException', () => {
+		this.processHandler.on('stopOnException', () => {
 			this.sendEvent(new StoppedEvent('exception', DebyDebugSession.THREAD_ID));
 		});
 		// this._runtime.on('breakpointValidated', (bp: DebyBreakpoint) => {
 		// 	this.sendEvent(new BreakpointEvent('changed', <DebugProtocol.Breakpoint>{ verified: bp.verified, id: bp.id }));
 		// });
-		this._runtime.on('output', (text, filePath, line, column) => {
+		this.processHandler.on('output', (text, filePath, line, column) => {
 			const e: DebugProtocol.OutputEvent = new OutputEvent(`${text}\n`);
 
 			if (text === 'start' || text === 'startCollapsed' || text === 'end') {
@@ -83,7 +104,7 @@ export class DebyDebugSession extends LoggingDebugSession {
 			}
 			this.sendEvent(e);
 		});
-		this._runtime.on('end', () => {
+		this.processHandler.on('end', () => {
 			//this.sendEvent(new TerminatedEvent());
 		});
 	}
@@ -99,10 +120,9 @@ export class DebyDebugSession extends LoggingDebugSession {
 	}
 
 	private sendCommand(cmd: string, callback: (str: string) => void = () => { }): void {
-		if (this._runtime.getState() != RuntimeState.Connected) {
-			return;
+		if (this.processHandler.isProcessRunning()) {
+			this.processHandler.send(cmd).then(callback)
 		}
-		this._runtime.send(cmd).then(callback);
 	}
 
 	/**
@@ -171,69 +191,26 @@ export class DebyDebugSession extends LoggingDebugSession {
 		await this._configurationDone.wait(1000);
 
 		const self = this;
-		self._runtime.onTerminate = (code) => {
-			//this.sendEvent(new TerminatedEvent());
-		};
-		self._runtime.onUnexpectedOutput = (str) => self.sendEvent(new StoppedEvent('entry', DebyDebugSession.THREAD_ID));
+		self.processHandler.onUnexpectedOutput = (str) => self.sendEvent(new StoppedEvent('entry', DebyDebugSession.THREAD_ID));
 
-		self.sendResponse(response);
-		this.sendEvent(new OutputEvent('Waiting for a Pry session...\n'));
-		this.connect();
-	}
-
-	private connect(): void {
-		const self = this;
-		self.tryConnect();
-		this._connectionTimer = setInterval(() => {
-			var net = require('net');
-			var server = net.createServer();
-
-			server.on('error', () => self.tryConnect());
-			server.on('listening', () => server.close());
-			server.listen(9876, '127.0.0.1');
-		}, 100)
-	}
-
-	private tryConnect(): void {
-		const self = this;
-		if (self._paused) {
-			return;
-		}
-		if (self._runtime.getState() != RuntimeState.Disconnected) {
-			return;
-		}
-		this._runtime.connect().then(str => {
-			const matches = /(?:\[1m)?From:.(?:\[0m)? (.*) @ line (\d+)/.exec(str);
-			if (matches && matches.length > 0) {
-				this._runtime.breakpoints.forEach(breakpoint => this.registerBreakpoint(breakpoint));
-				this.sendEvent(new OutputEvent('Found a Pry session\n'));
-				self.sendEvent(new StoppedEvent('entry', DebyDebugSession.THREAD_ID));
-			} else {
-				this.sendEvent(new OutputEvent(str));
-			}
-		}, exitCode => {
-			const stderr = exitCode[1] ? exitCode[1] : '';
-			const msg = stderr.indexOf('ECONNREFUSED') !== undefined ? 'No Pry session active, waiting\n' : 'pry-remote encountered an unexpected error\n';
-			self.sendEvent(new OutputEvent(msg));
-
-			//response.success = false;
-			//response.message = msg.indexOf('ECONNREFUSED') !== undefined ? 'No Pry session active' : 'pry-remote encountered an unexpected error';
-			//self.sendEvent(new OutputEvent(msg));
-			//self.sendResponse(response);
-		});
+		self.sendResponse(response)
+		this.sendEvent(new OutputEvent('Waiting for a Pry session...\n'))
+		this.portMonitor.start()
+		this.active = true
 	}
 
 	protected pauseRequest(response: DebugProtocol.PauseResponse, args: DebugProtocol.PauseArguments, request?: DebugProtocol.Request): void {
 		//this._paused = true;
-		this.connect();
+		//this.connect();
 	}
 
 	protected terminateRequest(response: DebugProtocol.TerminateResponse, args: DebugProtocol.TerminateArguments, request?: DebugProtocol.Request): void {
-		clearInterval(this._connectionTimer);
+		this.portMonitor.stop()
 		this.sendCommand('continue');
 		this.sendResponse(response);
 		this.sendEvent(new OutputEvent('Stopping debug session...\n'));
 		this.sendEvent(new TerminatedEvent());
+		this.active = false
 	}
 
 	protected setBreakPointsRequest(response: DebugProtocol.SetBreakpointsResponse, args: DebugProtocol.SetBreakpointsArguments): void {
@@ -249,11 +226,12 @@ export class DebyDebugSession extends LoggingDebugSession {
 	}
 
 	private registerBreakpoint(breakpoint: DebyBreakpoint): Promise<any> {
-		if (this._runtime.isConnected()) {
-			return this._runtime.send(`break ${breakpoint.file} ${breakpoint.line}`);
-		} else {
-			return Promise.resolve();
-		}
+		return Promise.resolve();
+		// if (this.processHandler.isConnected()) {
+		// 	return this.processHandler.send(`break ${breakpoint.file} ${breakpoint.line}`);
+		// } else {
+		// 	return Promise.resolve();
+		// }
 	}
 
 	protected threadsRequest(response: DebugProtocol.ThreadsResponse): void {
@@ -313,7 +291,7 @@ export class DebyDebugSession extends LoggingDebugSession {
 
 	protected continueRequest(response: DebugProtocol.ContinueResponse, args: DebugProtocol.ContinueArguments): void {
 		const self = this;
-		self._paused = false;
+		//self._paused = false;
 		this.sendCommand('continue');
 		self.sendResponse(response);
 	}
