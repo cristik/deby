@@ -70,7 +70,12 @@ export class InteractiveProcessHandler extends EventEmitter {
 			//const msg = JSON.stringify({str: str});
 			self.accumulatedStdout += str
 			if (self.responseMarker.exec(str)) {
-				console.log(`Received output: ${self.accumulatedStdout.substr(0,100)}`)
+				// this is a little bit brutal approach, but we know the last line contains only the
+				// marker, so we remove it
+				const lastNewlinePos = self.accumulatedStdout.lastIndexOf('\n')
+				self.accumulatedStdout = self.accumulatedStdout.slice(0, lastNewlinePos)
+
+				console.log(`Received output: ${self.accumulatedStdout.substr(self.accumulatedStdout.length-100,100)}`)
 				const cmd = self.commandQueue.shift()
 				if (cmd !== undefined) {
 					console.log(`Reporting success for ${cmd.cmd}`)

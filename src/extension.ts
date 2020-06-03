@@ -6,7 +6,7 @@
 
 import * as vscode from 'vscode';
 import { WorkspaceFolder, DebugConfiguration, ProviderResult, CancellationToken } from 'vscode';
-import { DebyDebugSession } from './debyDebug';
+import { DebyDebugSession } from './debyDebugSession';
 import * as Net from 'net';
 
 /*

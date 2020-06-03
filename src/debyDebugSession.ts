@@ -8,14 +8,8 @@ import { DebugProtocol } from 'vscode-debugprotocol';
 import { basename } from 'path';
 import { InteractiveProcessHandler } from './interactiveProcessHandler';
 import { PortMonitor } from './portMonitor';
+import { DebyDebugRuntime, DebyDebugRuntimeFactory, DebyBreakpoint, DebugCommand } from './debyDebugRuntime';
 const { Subject } = require('await-notify');
-
-
-class DebyBreakpoint {
-	public id: number
-	public file: string
-	public line: number
-}
 
 /**
  * This interface describes the deby-debug specific launch attributes
@@ -36,6 +30,8 @@ export class DebyDebugSession extends LoggingDebugSession {
 
 	// we don't support multiple threads, so we can use a hardcoded ID for the default thread
 	private static THREAD_ID = 1;
+
+	private runtime: DebyDebugRuntime
 
 	private processHandler: InteractiveProcessHandler;
 
@@ -60,7 +56,10 @@ export class DebyDebugSession extends LoggingDebugSession {
 		this.setDebuggerLinesStartAt1(true)
 		this.setDebuggerColumnsStartAt1(true)
 
-		this.processHandler = new InteractiveProcessHandler('rvm', ['2.1.10', 'exec', 'pry-remote'], /^\[\d+\]/);
+		this.runtime = new DebyDebugRuntimeFactory().makeRuntime('pry', 9876)
+
+		this.processHandler = this.runtime.makeProcessHandler()
+		//new InteractiveProcessHandler('rvm', ['2.1.10', 'exec', 'pry-remote'], /^\[\d+\]/);
 
 		this.processHandler.onTerminate = () => {
 			if (this.active) {
@@ -119,10 +118,12 @@ export class DebyDebugSession extends LoggingDebugSession {
 		super.sendResponse(response);
 	}
 
-	private sendCommand(cmd: string, callback: (str: string) => void = () => { }): void {
-		if (this.processHandler.isProcessRunning()) {
-			this.processHandler.send(cmd).then(callback)
-		}
+	private sendCommand<T>(cmd: DebugCommand<T>): Promise<T> {
+		return this.processHandler.send(cmd.cmd).then(cmd.responseParser)
+	}
+
+	private sendGenericCommand(cmd: string): Promise<string> {
+		return this.processHandler.send(cmd)
 	}
 
 	/**
@@ -188,7 +189,7 @@ export class DebyDebugSession extends LoggingDebugSession {
 		logger.setup(args.trace ? Logger.LogLevel.Verbose : Logger.LogLevel.Stop, false);
 
 		// wait until configuration has finished (and configurationDoneRequest has been called)
-		await this._configurationDone.wait(1000);
+		await this._configurationDone.wait(1000)
 
 		const self = this;
 		self.processHandler.onUnexpectedOutput = (str) => self.sendEvent(new StoppedEvent('entry', DebyDebugSession.THREAD_ID));
@@ -206,7 +207,7 @@ export class DebyDebugSession extends LoggingDebugSession {
 
 	protected terminateRequest(response: DebugProtocol.TerminateResponse, args: DebugProtocol.TerminateArguments, request?: DebugProtocol.Request): void {
 		this.portMonitor.stop()
-		this.sendCommand('continue');
+		this.sendGenericCommand('continue');
 		this.sendResponse(response);
 		this.sendEvent(new OutputEvent('Stopping debug session...\n'));
 		this.sendEvent(new TerminatedEvent());
@@ -245,31 +246,21 @@ export class DebyDebugSession extends LoggingDebugSession {
 	}
 
 	protected stackTraceRequest(response: DebugProtocol.StackTraceResponse, args: DebugProtocol.StackTraceArguments): void {
-		const self = this;
-		this.sendCommand('caller', str => {
-			const lines = str.split('\n');
-			var idx = 0;
-			var stackEntries: StackFrame[] = [];
-			var foundDebugger = false;
-			lines.forEach(line => {
-				const matches = /"\[0m\[31m(.*):(\d+):in `(.*)'\[1;31m"/.exec(line);
-				if (matches && foundDebugger) {
-					stackEntries.push(new StackFrame(idx,
-						matches[3],
-						new Source(basename(matches[1]), matches[1]),
-						self.convertDebuggerLineToClient(Number(matches[2]))));
-					idx++;
-				} else if (matches && ['pry-remote.rb', 'ruby-debug-base.rb'].indexOf(basename(matches[1])) > -1) {
-					foundDebugger = true;
-				}
-			});
-			// stk.frames.map(f => new StackFrame(f.index, f.name, this.createSource(f.file), this.convertDebuggerLineToClient(f.line)))
+		const self = this
+		// TODO: make these await's
+	 	self.sendCommand(self.runtime.stacktraceCommand()).then(stackEntries => {
+			const stackFrames = stackEntries.map(stackEntry => {
+				return new StackFrame(stackEntry.idx,
+					stackEntry.context,
+					new Source(basename(stackEntry.file), stackEntry.file),
+					self.convertDebuggerLineToClient(stackEntry.line))
+			})
 			response.body = {
-				stackFrames: stackEntries,
-				totalFrames: stackEntries.length
-			};
-			self.sendResponse(response);
-		});
+				stackFrames: stackFrames,
+				totalFrames: stackFrames.length
+			}
+			self.sendResponse(response)
+		})
 	}
 
 	protected scopesRequest(response: DebugProtocol.ScopesResponse, args: DebugProtocol.ScopesArguments): void {
@@ -292,43 +283,49 @@ export class DebyDebugSession extends LoggingDebugSession {
 	protected continueRequest(response: DebugProtocol.ContinueResponse, args: DebugProtocol.ContinueArguments): void {
 		const self = this;
 		//self._paused = false;
-		this.sendCommand('continue');
+		this.sendGenericCommand('continue');
 		self.sendResponse(response);
 	}
 
 	protected nextRequest(response: DebugProtocol.NextResponse, args: DebugProtocol.NextArguments): void {
-		const self = this;
-		this.sendCommand('next', str => {
-			self.sendResponse(response);
-			self.sendEvent(new StoppedEvent('step', DebyDebugSession.THREAD_ID));
-		});
+		response.success = false
+		this.sendResponse(response)
+		//const self = this
+		//this.sendGenericCommand('next').then(str => {
+		//	self.sendResponse(response)
+	//		self.sendEvent(new StoppedEvent('step', DebyDebugSession.THREAD_ID))
+	//	})
 	}
 
 	protected stepInRequest(response: DebugProtocol.StepInResponse, args: DebugProtocol.StepInArguments, request?: DebugProtocol.StepInRequest): void {
-		const self = this;
-		this.sendCommand('step', str => {
-			self.sendResponse(response);
-			self.sendEvent(new StoppedEvent('step', DebyDebugSession.THREAD_ID));
-		});
+		response.success = false
+		this.sendResponse(response)
+		// const self = this
+		// this.sendGenericCommand('step').then(str => {
+		// 	self.sendResponse(response)
+		// 	self.sendEvent(new StoppedEvent('step', DebyDebugSession.THREAD_ID))
+		// })
 	}
 
     protected stepOutRequest(response: DebugProtocol.StepOutResponse, args: DebugProtocol.StepOutArguments, request?: DebugProtocol.StepOutRequest): void {
-		const self = this;
-		this.sendCommand('finish', str => {
-			self.sendResponse(response);
-			self.sendEvent(new StoppedEvent('step', DebyDebugSession.THREAD_ID));
-		});
+		response.success = false
+		this.sendResponse(response)
+		// const self = this;
+		// this.sendGenericCommand('finish').then(str => {
+		// 	self.sendResponse(response)
+		// 	self.sendEvent(new StoppedEvent('step', DebyDebugSession.THREAD_ID))
+		// })
 	}
 
 	protected evaluateRequest(response: DebugProtocol.EvaluateResponse, args: DebugProtocol.EvaluateArguments): void {
-		const self = this;
-		this.sendCommand(args.expression, str => {
+		const self = this
+		this.sendGenericCommand(args.expression).then(str => {
 			response.body = {
 				result: str.replace(/=> |\x1B|\[[[0-9;]*m/g,''),
 				variablesReference: 0
 			};
-			self.sendResponse(response);
-		});
+			self.sendResponse(response)
+		})
 	}
 
 	protected completionsRequest(response: DebugProtocol.CompletionsResponse, args: DebugProtocol.CompletionsArguments): void {
