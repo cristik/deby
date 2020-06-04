@@ -95,6 +95,9 @@ export class InteractiveProcessHandler extends EventEmitter {
 	}
 
 	public send(cmd: string): Promise<string> {
+		if (cmd.length == 0) {
+			return Promise.reject('Empty command');
+		}
 		const self = this
 		return new Promise(resolve => {
 			console.log(`Enqueueing command: ${cmd}, queue size: ${self.commandQueue.length}`)

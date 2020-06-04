@@ -74,38 +74,6 @@ export class DebyDebugSession extends LoggingDebugSession {
 		}
 
 		this.portMonitor = new PortMonitor(9876, () => this.processHandler.launch())
-
-		// setup event handlers
-		this.processHandler.on('stopOnEntry', () => {
-			this.sendEvent(new StoppedEvent('entry', DebyDebugSession.THREAD_ID));
-		});
-		this.processHandler.on('stopOnStep', () => {
-			this.sendEvent(new StoppedEvent('step', DebyDebugSession.THREAD_ID));
-		});
-		this.processHandler.on('stopOnBreakpoint', () => {
-			this.sendEvent(new StoppedEvent('breakpoint', DebyDebugSession.THREAD_ID));
-		});
-		this.processHandler.on('stopOnDataBreakpoint', () => {
-			this.sendEvent(new StoppedEvent('data breakpoint', DebyDebugSession.THREAD_ID));
-		});
-		this.processHandler.on('stopOnException', () => {
-			this.sendEvent(new StoppedEvent('exception', DebyDebugSession.THREAD_ID));
-		});
-		// this._runtime.on('breakpointValidated', (bp: DebyBreakpoint) => {
-		// 	this.sendEvent(new BreakpointEvent('changed', <DebugProtocol.Breakpoint>{ verified: bp.verified, id: bp.id }));
-		// });
-		this.processHandler.on('output', (text, filePath, line, column) => {
-			const e: DebugProtocol.OutputEvent = new OutputEvent(`${text}\n`);
-
-			if (text === 'start' || text === 'startCollapsed' || text === 'end') {
-				e.body.group = text;
-				e.body.output = `group-${text}\n`;
-			}
-			this.sendEvent(e);
-		});
-		this.processHandler.on('end', () => {
-			//this.sendEvent(new TerminatedEvent());
-		});
 	}
 
 	sendEvent(event: DebugProtocol.Event): void {
@@ -120,10 +88,6 @@ export class DebyDebugSession extends LoggingDebugSession {
 
 	private sendCommand<T>(cmd: DebugCommand<T>): Promise<T> {
 		return this.processHandler.send(cmd.cmd).then(cmd.responseParser)
-	}
-
-	private sendGenericCommand(cmd: string): Promise<string> {
-		return this.processHandler.send(cmd)
 	}
 
 	/**
@@ -192,7 +156,6 @@ export class DebyDebugSession extends LoggingDebugSession {
 		await this._configurationDone.wait(1000)
 
 		const self = this;
-		self.processHandler.onUnexpectedOutput = (str) => self.sendEvent(new StoppedEvent('entry', DebyDebugSession.THREAD_ID));
 
 		self.sendResponse(response)
 		this.sendEvent(new OutputEvent('Waiting for a Pry session...\n'))
@@ -207,7 +170,7 @@ export class DebyDebugSession extends LoggingDebugSession {
 
 	protected terminateRequest(response: DebugProtocol.TerminateResponse, args: DebugProtocol.TerminateArguments, request?: DebugProtocol.Request): void {
 		this.portMonitor.stop()
-		this.sendGenericCommand('continue');
+		this.sendCommand(this.runtime.continueCommand());
 		this.sendResponse(response);
 		this.sendEvent(new OutputEvent('Stopping debug session...\n'));
 		this.sendEvent(new TerminatedEvent());
@@ -226,13 +189,9 @@ export class DebyDebugSession extends LoggingDebugSession {
 		this.sendResponse(response);
 	}
 
-	private registerBreakpoint(breakpoint: DebyBreakpoint): Promise<any> {
-		return Promise.resolve();
-		// if (this.processHandler.isConnected()) {
-		// 	return this.processHandler.send(`break ${breakpoint.file} ${breakpoint.line}`);
-		// } else {
-		// 	return Promise.resolve();
-		// }
+	private registerBreakpoint(breakpoint: DebyBreakpoint): Promise<void> {
+		const self = this
+		return self.sendCommand(self.runtime.setBreakpointCommand(breakpoint))
 	}
 
 	protected threadsRequest(response: DebugProtocol.ThreadsResponse): void {
@@ -260,6 +219,10 @@ export class DebyDebugSession extends LoggingDebugSession {
 				totalFrames: stackFrames.length
 			}
 			self.sendResponse(response)
+		}, err => {
+			response.success = false
+			response.message = err
+			self.sendResponse(response)
 		})
 	}
 
@@ -275,55 +238,75 @@ export class DebyDebugSession extends LoggingDebugSession {
 
 	protected async variablesRequest(response: DebugProtocol.VariablesResponse, args: DebugProtocol.VariablesArguments, request?: DebugProtocol.Request) {
 		const self = this;
-		//this.sendCommand('ls -lic').then ( str => {
-			self.sendResponse(response);
-		//});
+		self.sendCommand(self.runtime.variablesCommand()).then(str => {
+			self.sendResponse(response)
+		}, err => {
+			response.success = false
+			response.message = err
+			self.sendResponse(response)
+		})
 	}
 
 	protected continueRequest(response: DebugProtocol.ContinueResponse, args: DebugProtocol.ContinueArguments): void {
 		const self = this;
 		//self._paused = false;
-		this.sendGenericCommand('continue');
-		self.sendResponse(response);
+		self.sendCommand(self.runtime.continueCommand()).then(str => {
+			self.sendResponse(response)
+			self.sendEvent(new StoppedEvent('step', DebyDebugSession.THREAD_ID))
+		}, err => {
+			response.success = false
+			response.message = err
+			self.sendResponse(response)
+		})
 	}
 
 	protected nextRequest(response: DebugProtocol.NextResponse, args: DebugProtocol.NextArguments): void {
-		response.success = false
-		this.sendResponse(response)
-		//const self = this
-		//this.sendGenericCommand('next').then(str => {
-		//	self.sendResponse(response)
-	//		self.sendEvent(new StoppedEvent('step', DebyDebugSession.THREAD_ID))
-	//	})
+		const self = this
+		self.sendCommand(self.runtime.stepOverCommand()).then(str => {
+			self.sendResponse(response)
+			self.sendEvent(new StoppedEvent('step', DebyDebugSession.THREAD_ID))
+		}, err => {
+			response.success = false
+			response.message = err
+			self.sendResponse(response)
+		})
 	}
 
 	protected stepInRequest(response: DebugProtocol.StepInResponse, args: DebugProtocol.StepInArguments, request?: DebugProtocol.StepInRequest): void {
-		response.success = false
-		this.sendResponse(response)
-		// const self = this
-		// this.sendGenericCommand('step').then(str => {
-		// 	self.sendResponse(response)
-		// 	self.sendEvent(new StoppedEvent('step', DebyDebugSession.THREAD_ID))
-		// })
+		const self = this
+		self.sendCommand(self.runtime.stepIntoCommand()).then(str => {
+			self.sendResponse(response)
+			self.sendEvent(new StoppedEvent('step', DebyDebugSession.THREAD_ID))
+		}, err => {
+			response.success = false
+			response.message = err
+			self.sendResponse(response)
+		})
 	}
 
     protected stepOutRequest(response: DebugProtocol.StepOutResponse, args: DebugProtocol.StepOutArguments, request?: DebugProtocol.StepOutRequest): void {
-		response.success = false
-		this.sendResponse(response)
-		// const self = this;
-		// this.sendGenericCommand('finish').then(str => {
-		// 	self.sendResponse(response)
-		// 	self.sendEvent(new StoppedEvent('step', DebyDebugSession.THREAD_ID))
-		// })
+		const self = this;
+		self.sendCommand(self.runtime.stepOutCommand()).then(() => {
+			self.sendResponse(response)
+			self.sendEvent(new StoppedEvent('step', DebyDebugSession.THREAD_ID))
+		}, err => {
+			response.success = false
+			response.message = err
+			self.sendResponse(response)
+		})
 	}
 
 	protected evaluateRequest(response: DebugProtocol.EvaluateResponse, args: DebugProtocol.EvaluateArguments): void {
 		const self = this
-		this.sendGenericCommand(args.expression).then(str => {
+		self.sendCommand(self.runtime.evalCommand(args.expression)).then(str => {
 			response.body = {
-				result: str.replace(/=> |\x1B|\[[[0-9;]*m/g,''),
+				result: str,
 				variablesReference: 0
 			};
+			self.sendResponse(response)
+		}, err => {
+			response.success = false
+			response.message = err
 			self.sendResponse(response)
 		})
 	}

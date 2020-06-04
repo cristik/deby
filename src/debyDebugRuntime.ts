@@ -23,6 +23,22 @@ export interface DebyDebugRuntime {
 	makeProcessHandler(): InteractiveProcessHandler
 
 	stacktraceCommand(): DebugCommand<DebyStacktraceEntry[]>
+
+	stepOverCommand(): DebugCommand<void>
+
+	stepIntoCommand(): DebugCommand<void>
+
+	stepOutCommand(): DebugCommand<void>
+
+	continueCommand(): DebugCommand<void>
+
+	pauseCommand(): DebugCommand<void>
+
+	evalCommand(expr: string): DebugCommand<string>
+
+	variablesCommand(): DebugCommand<string[]>
+
+	setBreakpointCommand(breakpoint: DebyBreakpoint): DebugCommand<void>
 }
 
 export class DebyDebugRuntimeFactory {
